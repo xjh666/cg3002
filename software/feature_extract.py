@@ -25,12 +25,6 @@ def compute_standard_dev(input_data):
 		standard_dev.append(np.std(input_data[:,i]))
 	return standard_dev
 
-def compute_rms(input_data):
-	square = 0
-	for i in range(15):
-		square+=(input_data[i]**2)
-	return math.sqrt(square/float(15))
-
 def compute_entropy(input_data):
 	entropy = []
 	for i in range(0,15):
