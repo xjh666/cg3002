@@ -1,4 +1,4 @@
-# CG3002 AY1819 Sem2 Group3 - *Dance*
+# CG3002 AY1819 Sem2 Group3 - *Dance Dance*
 
 ## **Introduction**
 ### This repository is for student project - [CG3002 Embedded Systems Design Project](https://nusmods.com/modules/CG3002/embedded-systems-design-project).
