@@ -19,7 +19,7 @@ def fully_connected_model():
     model.add(Dense(64, activation='relu'))
     model.add(Dense(64, activation='relu'))
     model.add(Dense(32, activation='relu'))
-    model.add(Dense(14, activation='softmax')) # use softmax to represented predicted probabilty
+    model.add(Dense(14, activation='softmax')) 
 
     model.compile(loss='sparse_categorical_crossentropy', optimizer='Adam', metrics=['accuracy'])
 
