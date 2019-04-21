@@ -33,9 +33,6 @@ def create_logger(name, filename='/home/pi/comms/comms.log'):
 logger = create_logger('root')
 BUF_SIZE = 50
 q = Queue()
-# clf = Classifier('/home/pi/comms/dance_data_Mar_26_model.h5')
-# clf = Classifier('/home/pi/dance/communications/test_model.sav')
-# print(clf.predict(dataset[157:182]))
 
 
 class ProducerThread(threading.Thread):
@@ -101,11 +98,9 @@ class ConsumerThread(threading.Thread):
         self.target = target
         self.name = name
         self.logger = create_logger('ML', '/home/pi/comms/ml_output.log')
-        #self.clf = Classifier('/home/pi/dance/communications/window50_model.sav')
-        #self.clf = Classifier('/home/pi/dance/software/final_models/window50_model.h5')
         self.clf = Classifier(
-            '/home/pi/dance/software/final_models/model_1.joblib',
-            '/home/pi/dance/software/final_models/scaler_1.joblib'
+            '/home/pi/dance/software/model/model.joblib',
+            '/home/pi/dance/software/model/scaler.joblib'
         )
         # Connect to eval server
         ip_addr = "192.168.43.51"
@@ -145,7 +140,7 @@ class ConsumerThread(threading.Thread):
              9: 'snake',
              10:'doublepump',
              11:'mermaid',
-             12:'final'
+             12:'logout'
         }
         print("Consumer ready")
         
