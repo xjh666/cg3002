@@ -1,11 +1,11 @@
 #include <Arduino.h>
 
-const int AD0Delay = 1;
-
 // Global Variables
 
-  int counter = 0;
-float sensorValue = 0;   // Variable to store value from analog read
+/////////-----------------------------------------------------------------------
+////////// Power circuit
+int counter = 0;
+float currentSensorValue = 0;   // Variable to store current value from analog read
 float halvedVoltage = 0;
 float voltage = 0;
 float current = 0;       // Calculated current value
@@ -15,16 +15,23 @@ float cumuPower = 0;
 //float energy = 0;
 unsigned long lasttime = 0;
 unsigned long currenttime = 0;
+///////---------------------------------------------------------------------
 
+///////---------------------------------------------------------------------
+/////// Comms
 // Static Variables
 int baudRate = 19200;
 const int SENSOR_PIN = A0;  // Input pin for measuring Vout
 const int SENSOR_PIN1 = A1;  // Input pin for measuring divided voltage
 const float RS = 0.1;          // Shunt resistor value (in ohms)
 const int VOLTAGE_REF = 5;  // Reference voltage for analog read
+///////---------------------------------------------------------------------
+
+
+///////---------------------------------------------------------------------
+//////// IMU Sensors
 
 #include "I2Cdev.h"
-
 #include "MPU6050_6Axis_MotionApps20.h"
 
 // Arduino Wire library is required if I2Cdev I2CDEV_ARDUINO_WIRE implementation
@@ -33,17 +40,15 @@ const int VOLTAGE_REF = 5;  // Reference voltage for analog read
     #include "Wire.h"
 #endif
 
-//MPU6050 mpu;
-MPU6050 mpu[5];
-
 #define SENSOR0_AD0 13
 #define SENSOR1_AD0 11
 #define SENSOR2_AD0 10
 #define SENSOR3_AD0 9
 #define SENSOR4_AD0 8
 
-int activeSensor = 0;
-
+const int AD0Delay = 1; // Delay in microseconds to ensure proper switching of the I2C bus in order to read more than 2 sensors
+MPU6050 mpu[5];
+int activeSensor = 0; // The IMU that is currently being read or initialized
 double sensorReadings[15]; 
 
 // MPU control/status vars
@@ -61,12 +66,16 @@ VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measur
 VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
 VectorFloat gravity;    // [x, y, z]            gravity vector
 
+volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt has happened
+
+// Respective offsets for the 5 IMUs
 const int offset0[6] = {-3273, -1300, 1387, -17, -41, 81};
 const int offset1[6] = {-2734, 2518, 1139, 41, -35, 52};
 const int offset2[6] = {1960, -204, 1074, 203, -144, 25};
 const int offset3[6] = {-3742, 746, 1984, 80, -25, 83};
 const int offset4[6] = {983, -2752, 1027, 273, -40, -159};
 
+// Helper function to set offsets for IMUs
 void SetOffsets(int mpuNum, int TheOffsets[6])
   { mpu[mpuNum].setXAccelOffset(TheOffsets [0]);
     mpu[mpuNum].setYAccelOffset(TheOffsets [1]);
@@ -76,12 +85,11 @@ void SetOffsets(int mpuNum, int TheOffsets[6])
     mpu[mpuNum].setZGyroOffset (TheOffsets [5]);
   } // SetOffsets
 
+///-----------------------------------------------------
 
-// ================================================================
-// ===               INTERRUPT DETECTION ROUTINE                ===
-// ================================================================
 
-volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
+/////------------------------------------------------------------
+/////// Task scheduling
 
 #include "Arduino.h"
 #include <SoftwareSerial.h>
@@ -91,6 +99,12 @@ volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin h
 // Declare a mutex Semaphore Handle which we will use to manage the Serial Port.
 // It will be used to ensure only only one Task is accessing this resource at any time.
 SemaphoreHandle_t xSerialSemaphore;
+////-------------------------------------------------------------------
+
+
+
+////////////----------------------------------------------------------------------
+//////// Comms helper functions
 
 // Definition of packet structure
 typedef struct DataPacket{
@@ -192,10 +206,12 @@ void sendSerialData(char *buffer, int len)
   }
 }
 
+////--------------------------------------------------------------------------------
+
 /*--------------------------------------------------*/
-/*---------------------- Tasks ---------------------*/
+/*---------------------- FREERTOS Tasks ---------------------*/
 /*--------------------------------------------------*/
-void Task1( void *pvParameters __attribute__((unused)) )  // This is a Task.
+void Task1( void *pvParameters __attribute__((unused)) )  // This is a Task to read IMU sensors
 {
   for (;;)
   {
@@ -206,7 +222,6 @@ void Task1( void *pvParameters __attribute__((unused)) )  // This is a Task.
     // If the semaphore is not available, wait 5 ticks of the Scheduler to see if it becomes free.
     if ( xSemaphoreTake( xSerialSemaphore, ( TickType_t ) 5 ) == pdTRUE )
     {
-      //Serial.println("Obtaining readings from sensors");
       mpuInterrupt = true;
       
       xSemaphoreGive( xSerialSemaphore ); // Now free or "Give" the Serial Port for others.
@@ -258,18 +273,18 @@ void Task3( void *pvParameters __attribute__((unused)) )  // This is a Task.
     // If the semaphore is not available, wait 5 ticks of the Scheduler to see if it becomes free.
     if ( xSemaphoreTake( xSerialSemaphore, ( TickType_t ) 5 ) == pdTRUE )
     {
-    sensorValue = analogRead(SENSOR_PIN);
+    currentSensorValue = analogRead(SENSOR_PIN);
     halvedVoltage = analogRead(SENSOR_PIN1);
 
     voltage = halvedVoltage * (5/1023.0) * 2;
 
     // Remap the ADC value into a voltage number (5V reference)
-    sensorValue = (sensorValue * VOLTAGE_REF) / 1023;
+    currentSensorValue = (currentSensorValue * VOLTAGE_REF) / 1023;
 
     // Follow the equation given by the INA169 datasheet to
     // determine the current flowing through RS. Assume RL = 10k
     // Is = (Vout x 1k) / (RS x RL)
-    current = sensorValue / (10 * RS);
+    current = currentSensorValue / (10 * RS);
     mCurrent = current * 1000; 
     
     power = mCurrent * VOLTAGE_REF; // unit = milli watt
@@ -302,126 +317,156 @@ void setup() {
 
     Serial.begin(baudRate);
     while (!Serial); // wait for Leonardo enumeration, others continue immediately
-    Serial.println("I'M ALIVE!");
+
+    /// Pins for controlling the sensors
     pinMode(SENSOR0_AD0, OUTPUT);
     pinMode(SENSOR1_AD0, OUTPUT);
     pinMode(SENSOR2_AD0, OUTPUT);
     pinMode(SENSOR3_AD0, OUTPUT);
     pinMode(SENSOR4_AD0, OUTPUT);
 
-for(activeSensor=0; activeSensor<5; activeSensor++) {
-    Serial.print("BEFORE SWITCH");
-      switch (activeSensor) {
-        case 0:
-          digitalWrite(SENSOR0_AD0, LOW);
-          digitalWrite(SENSOR1_AD0, HIGH);
-          digitalWrite(SENSOR2_AD0, HIGH);
-          digitalWrite(SENSOR3_AD0, HIGH);
-          digitalWrite(SENSOR4_AD0, HIGH);
-          //SetOffsets(activeSensor, offset0);
-          break;
-        case 1:
-          digitalWrite(SENSOR1_AD0, LOW);
-          digitalWrite(SENSOR0_AD0, HIGH);
-          digitalWrite(SENSOR2_AD0, HIGH);
-          digitalWrite(SENSOR3_AD0, HIGH);
-          digitalWrite(SENSOR4_AD0, HIGH);
-          //SetOffsets(activeSensor, offset1);
-          break;
-        case 2:
-          digitalWrite(SENSOR2_AD0, LOW);
-          digitalWrite(SENSOR0_AD0, HIGH);
-          digitalWrite(SENSOR1_AD0, HIGH);
-          digitalWrite(SENSOR3_AD0, HIGH);
-          digitalWrite(SENSOR4_AD0, HIGH);
-          //SetOffsets(activeSensor, offset2);
-          break;
-        case 3:
-          digitalWrite(SENSOR3_AD0, LOW);
-          digitalWrite(SENSOR0_AD0, HIGH);
-          digitalWrite(SENSOR1_AD0, HIGH);
-          digitalWrite(SENSOR2_AD0, HIGH);
-          digitalWrite(SENSOR4_AD0, HIGH);
-          //SetOffsets(activeSensor, offset3);
-          break;
-        case 4:
-          digitalWrite(SENSOR4_AD0, LOW);
-          digitalWrite(SENSOR0_AD0, HIGH);
-          digitalWrite(SENSOR1_AD0, HIGH);
-          digitalWrite(SENSOR2_AD0, HIGH);
-          digitalWrite(SENSOR3_AD0, HIGH);
-          //SetOffsets(activeSensor, offset4);
-          break;
-      }
 
-    // initialize device
-    Serial.print(F("Initializing I2C devices... Sensor "));
-    Serial.println(activeSensor);
-    mpu[activeSensor].initialize();
+    ////-------------------------------------------------------------
+    /////// Initialize the IMU sensors
     
-    // verify connection
-    Serial.println(F("Testing device connections..."));
-    Serial.println(mpu[activeSensor].testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
-
-    // wait for ready
-
-    // load and configure the DMP
-    Serial.println(F("Initializing DMP..."));
-    devStatus = mpu[activeSensor].dmpInitialize();
+    for(activeSensor=0; activeSensor<5; activeSensor++) {
+          switch (activeSensor) {
+            case 0:
+              digitalWrite(SENSOR0_AD0, LOW);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR1_AD0, HIGH);
+              delayMicroseconds(AD0Delay);
+              digitalWrite(SENSOR2_AD0, HIGH);
+              delayMicroseconds(AD0Delay);
+              digitalWrite(SENSOR3_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR4_AD0, HIGH);
+              delayMicroseconds(AD0Delay);
+              break;
+            case 1:
+              digitalWrite(SENSOR1_AD0, LOW);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR0_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR2_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR3_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR4_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              break;
+            case 2:
+              digitalWrite(SENSOR2_AD0, LOW);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR0_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR1_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR3_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR4_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              break;
+            case 3:
+              digitalWrite(SENSOR3_AD0, LOW);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR0_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR1_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR2_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR4_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              break;
+            case 4:
+              digitalWrite(SENSOR4_AD0, LOW);
+              delayMicroseconds(AD0Delay);
+              digitalWrite(SENSOR0_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR1_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR2_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              digitalWrite(SENSOR3_AD0, HIGH);
+              delayMicroseconds(AD0Delay);          
+              break;
+          }
     
-    // make sure it worked (returns 0 if so)
-    if (devStatus == 0) {
-        // turn on the DMP, now that it's ready
-        Serial.println(F("Enabling DMP..."));
-        mpu[activeSensor].setDMPEnabled(true);
-
-        // enable Arduino interrupt detection
-        Serial.println(F("Enabling interrupt detection ..."))
-        mpuIntStatus = mpu[activeSensor].getIntStatus();
-
-        // set our DMP Ready flag so the main loop() function knows it's okay to use it
-        Serial.println(F("DMP ready! Waiting for first interrupt..."));
-        dmpReady = true;
-
-        // get expected DMP packet size for later comparison
-        packetSize = mpu[activeSensor].dmpGetFIFOPacketSize();
+        // initialize IMU
+        Serial.print(F("Initializing I2C devices... Sensor "));
+        Serial.println(activeSensor);
+        mpu[activeSensor].initialize();
         
-        switch (activeSensor) {
-          case 0:
-            SetOffsets(activeSensor, offset0);
-            break;
-          case 1:
-            SetOffsets(activeSensor, offset1);
-            break;
-          case 2:
-            SetOffsets(activeSensor, offset2);
-            break;
-          case 3:
-            SetOffsets(activeSensor, offset3);
-            break;
-          case 4:
-            SetOffsets(activeSensor, offset4);
-            break;
-      }
-    } else {
-        // ERROR!
-        // 1 = initial memory load failed
-        // 2 = DMP configuration updates failed
-        // (if it's going to break, usually the code will be 1)
-        Serial.print(F("DMP Initialization failed (code "));
-        Serial.print(devStatus);
-        Serial.println(F(")"));
-        if(activeSensor == 4) {for(;;);}
-        else {
-           Serial.println(F("\nSend any character to check other sensors: "));
-            while (Serial.available() && Serial.read()); // empty buffer
-            while (!Serial.available());                 // wait for data
-            while (Serial.available() && Serial.read()); // empty buffer again
+        // verify connection
+        Serial.println(F("Testing device connections..."));
+        Serial.println(mpu[activeSensor].testConnection() ? F("MPU6050 connection successful") : F("MPU6050 connection failed"));
+    
+        // load and configure the DMP
+        Serial.println(F("Initializing DMP..."));
+        devStatus = mpu[activeSensor].dmpInitialize();
+        
+        // make sure it worked (returns 0 if so)
+        if (devStatus == 0) {
+            // turn on the DMP, now that it's ready
+            Serial.println(F("Enabling DMP..."));
+            mpu[activeSensor].setDMPEnabled(true);
+    
+            // enable Arduino interrupt detection
+            Serial.println(F("Enabling interrupt detection ..."))
+            mpuIntStatus = mpu[activeSensor].getIntStatus();
+    
+            // set our DMP Ready flag so the main loop() function knows it's okay to use it
+            Serial.println(F("DMP ready! Waiting for first interrupt..."));
+            dmpReady = true;
+    
+            // get expected DMP packet size for later comparison
+            packetSize = mpu[activeSensor].dmpGetFIFOPacketSize();
+    
+            // Set offsets
+            switch (activeSensor) {
+              case 0:
+                SetOffsets(activeSensor, offset0);
+                break;
+              case 1:
+                SetOffsets(activeSensor, offset1);
+                break;
+              case 2:
+                SetOffsets(activeSensor, offset2);
+                break;
+              case 3:
+                SetOffsets(activeSensor, offset3);
+                break;
+              case 4:
+                SetOffsets(activeSensor, offset4);
+                break;
+          }
+        } else {
+            // ERROR!
+            // 1 = initial memory load failed
+            // 2 = DMP configuration updates failed
+            // (if it's going to break, usually the code will be 1)
+            Serial.print(F("DMP Initialization failed (code "));
+            Serial.print(devStatus);
+            Serial.println(F(")"));
+    
+            // Stop the program if we have reached the last sensor and there's error
+            if(activeSensor == 4) {for(;;);}
+    
+            // Notify the user of the error, 
+            // Wait for user prompt to check next sensor
+            else {
+               Serial.println(F("\nSend any character to check other sensors: "));
+                while (Serial.available() && Serial.read()); // empty buffer
+                while (!Serial.available());                 // wait for data
+                while (Serial.available() && Serial.read()); // empty buffer again
+            }
         }
     }
-    
-      }
 
+    /////-----------------------------------------------------------------
+    ///// Comms
+    
     Serial2.begin(baudRate);
 
 
@@ -505,7 +550,7 @@ for(activeSensor=0; activeSensor<5; activeSensor++) {
 
 void loop() {
 	
-        // if programming failed, don't try to do anything
+      // if sensors failed to initialize, don't try to do anything
       if (!dmpReady) return;
     
       // wait for MPU interrupt or extra packet(s) available
@@ -593,14 +638,10 @@ void loop() {
       }
     
       mpuIntStatus = mpu[activeSensor].getIntStatus();
-      if (mpuIntStatus == 0){
-        Serial.println("-------------------------- IntStatus 0----------");
-      }
 
       // get current FIFO count
       fifoCount = mpu[activeSensor].getFIFOCount();
-            
-  
+
       // check for overflow (this should never happen unless our code is too inefficient)
       if ((mpuIntStatus & _BV(MPU6050_INTERRUPT_FIFO_OFLOW_BIT)) || fifoCount >= 1024) {
           // reset so we can continue cleanly
@@ -626,10 +667,15 @@ void loop() {
             mpu[activeSensor].dmpGetGravity(&gravity, &q);
             mpu[activeSensor].dmpGetLinearAccel(&aaReal, &aa, &gravity);
             mpu[activeSensor].dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+
+            /// 8192 is the maximum sensor reading
+            /// So we divide by this number to obtain acceleration in g
             double x = (double) aaWorld.x / 8192.0;
             double y = (double) aaWorld.y / 8192.0;
             double z = (double) aaWorld.z / 8192.0;
             int arrayCursor = activeSensor * 3;
+
+            /// Store sensor readings into an array to wait for comms to read
             sensorReadings[arrayCursor] = x;
             sensorReadings[arrayCursor + 1] = y;
             sensorReadings[arrayCursor + 2] = z;
